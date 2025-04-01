@@ -7,6 +7,7 @@ import numpy as np
 import os
 from process_data import preprocess_sales_data, load_processed_service_data
 from supabase_utils import fetch_data_from_supabase
+import traceback
 
 
 def format_indian_money(amount, format_type='full'):
@@ -1735,3 +1736,11 @@ with tab5:
 # Add footer
 st.markdown("---")
 st.caption("Executive Dashboard - Created with Streamlit and Plotly")
+
+try:
+    pass  # Replace with actual app code
+except Exception as e:
+    with open("error_log.txt", "w") as f:
+        f.write(f"Error: {str(e)}\n")
+        f.write(traceback.format_exc())
+    st.error(f"App failed to load: {str(e)}")
