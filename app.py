@@ -6,7 +6,7 @@ from plotly.subplots import make_subplots
 import numpy as np
 import os
 from process_data import preprocess_sales_data, load_processed_service_data
-from supabase_utils import fetch_data_from_supabase
+from s3_utils import read_csv_from_s3
 import traceback
 
 
@@ -50,8 +50,8 @@ def format_indian_money(amount, format_type='full'):
 
 
 # S3 configuration
-S3_BUCKET = st.secrets["S3_BUCKET"]
-S3_PREFIX = st.secrets["S3_PREFIX"]
+S3_BUCKET = "extraa-files"
+S3_KEY = "SALON/Extraction_Mini.csv"
 
 # Set page configuration
 st.set_page_config(
@@ -101,7 +101,7 @@ else:
 
 
 def load_data():
-    # Load sales data from Supabase
+    # Load sales data from S3
     try:
         # Display status
         placeholder = st.empty()
@@ -109,11 +109,10 @@ def load_data():
         status_text = st.empty()
 
         # Display initial status
-        status_text.info(
-            "Starting to fetch data from Supabase year by year...")
+        status_text.info("Starting to fetch data from AWS S3...")
 
-        # Fetch data from Supabase 'paulsons' table
-        sales_data = fetch_data_from_supabase(table_name="paulsons")
+        # Fetch data from S3
+        sales_data = read_csv_from_s3(S3_BUCKET, S3_KEY)
 
         # Update status on completion
         if not sales_data.empty:
@@ -121,26 +120,26 @@ def load_data():
             status_text.info(f"Processing {len(sales_data)} records...")
 
         # Clean and convert numeric columns
-        numeric_cols = ['sales_collected_exc_tax', 'tax_collected', 'sales_collected_inc_tax',
-                        'redeemed', 'collected_to_date', 'collected']
+        numeric_cols = ['Sales Collected (Exc.Tax)', 'Tax Collected', 'Sales Collected (Inc.Tax)',
+                        'Redeemed', 'Collected to Date', 'Collected']
         for col in numeric_cols:
             if col in sales_data.columns:
                 # Convert to numeric, coercing errors to NaN
                 sales_data[col] = pd.to_numeric(
                     sales_data[col], errors='coerce')
 
-            progress_bar.progress(70)
+        progress_bar.progress(70)
 
-        # Convert sale_date to datetime with error handling
-        sales_data['sale_date'] = pd.to_datetime(
-            sales_data['sale_date'], errors='coerce')
+        # Convert Sale Date to datetime with error handling
+        sales_data['Sale Date'] = pd.to_datetime(
+            sales_data['Sale Date'], errors='coerce')
 
         # Drop rows with invalid sale_date
-        sales_data = sales_data.dropna(subset=['sale_date'])
+        sales_data = sales_data.dropna(subset=['Sale Date'])
 
         # Extract Year and Month as strings
-        sales_data['Year'] = sales_data['sale_date'].dt.year.astype(str)
-        sales_data['Month'] = sales_data['sale_date'].dt.strftime('%B')
+        sales_data['Year'] = sales_data['Sale Date'].dt.year.astype(str)
+        sales_data['Month'] = sales_data['Sale Date'].dt.strftime('%B')
 
         # Add debug info about extracted years before filtering
         print(f"Years in data before filtering: {sales_data['Year'].unique()}")
@@ -152,18 +151,36 @@ def load_data():
         progress_bar.progress(80)
 
         # Map columns to expected format for the dashboard
-        sales_data['SALON NAMES'] = sales_data['center_name']
-        sales_data['BRAND'] = sales_data['business_unit'].fillna('Other')
+        sales_data['SALON NAMES'] = sales_data['Center Name']
+        sales_data['BRAND'] = sales_data['Business Unit'].fillna('Other')
+
+        # Rename columns to match the previous format
+        sales_data = sales_data.rename(columns={
+            'Sales Collected (Exc.Tax)': 'sales_collected_exc_tax',
+            'Tax Collected': 'tax_collected',
+            'Sales Collected (Inc.Tax)': 'sales_collected_inc_tax',
+            'Redeemed': 'redeemed',
+            'Collected to Date': 'collected_to_date',
+            'Collected': 'collected',
+            'Sale Date': 'sale_date',
+            'Invoice No': 'invoice_no',
+            'Center Name': 'center_name',
+            'Item Name': 'item_name',
+            'Item Type': 'item_type',
+            'Item Category': 'item_category',
+            'Item Subcategory': 'item_subcategory',
+            'Business Unit': 'business_unit'
+        })
 
         # Group by Year, Month, SALON NAMES, BRAND to calculate metrics
         grouped_sales = sales_data.groupby(['Year', 'Month', 'SALON NAMES', 'BRAND']).agg({
-            'sales_collected_exc_tax': 'sum',
+            'collected_to_date': 'sum',
             'invoice_no': 'nunique'
         }).reset_index()
 
         # Rename columns to match expected format
         grouped_sales.rename(columns={
-            'sales_collected_exc_tax': 'MTD SALES',
+            'collected_to_date': 'MTD SALES',
             'invoice_no': 'MTD BILLS'
         }, inplace=True)
 
@@ -183,7 +200,7 @@ def load_data():
         # Return the transformed data
         return grouped_sales, sales_data
     except Exception as e:
-        st.error(f"Error loading data from Supabase: {e}")
+        st.error(f"Error loading data from S3: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
     # Load processed service data is no longer needed since we're using the raw data directly
@@ -640,22 +657,22 @@ with tab3:
             if 'item_type' in breakdown_data.columns:
                 # Calculate metrics by Item Type
                 item_type_sales = breakdown_data.groupby(
-                    'item_type')['sales_collected_exc_tax'].sum().reset_index()
+                    'item_type')['collected_to_date'].sum().reset_index()
                 item_type_sales = item_type_sales.sort_values(
-                    'sales_collected_exc_tax', ascending=False)
+                    'collected_to_date', ascending=False)
 
                 # Format values for display
-                item_type_sales['formatted_sales'] = item_type_sales['sales_collected_exc_tax'].apply(
+                item_type_sales['formatted_sales'] = item_type_sales['collected_to_date'].apply(
                     lambda x: format_indian_money(x).replace('₹', '')
                 )
 
                 # Create Item Type visualization
                 fig = px.pie(
                     item_type_sales,
-                    values='sales_collected_exc_tax',
+                    values='collected_to_date',
                     names='item_type',
                     title=f"Sales Distribution by Item Type ({year_title})",
-                    labels={'sales_collected_exc_tax': 'Sales'},
+                    labels={'collected_to_date': 'Sales'},
                     hole=0.4,
                     color_discrete_sequence=px.colors.qualitative.Bold
                 )
@@ -675,18 +692,18 @@ with tab3:
             # Group by Item Category for visualization
             if 'item_category' in breakdown_data.columns:
                 item_category_sales = breakdown_data.groupby(
-                    'item_category')['sales_collected_exc_tax'].sum().reset_index()
+                    'item_category')['collected_to_date'].sum().reset_index()
                 item_category_sales = item_category_sales.sort_values(
-                    'sales_collected_exc_tax', ascending=False)
+                    'collected_to_date', ascending=False)
 
                 # Format values for display
-                item_category_sales['formatted_sales'] = item_category_sales['sales_collected_exc_tax'].apply(
+                item_category_sales['formatted_sales'] = item_category_sales['collected_to_date'].apply(
                     lambda x: format_indian_money(x).replace('₹', '')
                 )
 
                 fig = px.pie(
                     item_category_sales,
-                    values='sales_collected_exc_tax',
+                    values='collected_to_date',
                     names='item_category',
                     title=f"Sales Distribution by Item Category ({year_title})",
                     color_discrete_sequence=px.colors.qualitative.Pastel,
@@ -711,12 +728,12 @@ with tab3:
         if 'business_unit' in breakdown_data.columns:
             # Group by Business Unit for business unit chart
             business_unit_sales = breakdown_data.groupby(
-                'business_unit')['sales_collected_exc_tax'].sum().reset_index()
+                'business_unit')['collected_to_date'].sum().reset_index()
             business_unit_sales = business_unit_sales.sort_values(
-                'sales_collected_exc_tax', ascending=False)
+                'collected_to_date', ascending=False)
 
             # Create formatted values for display
-            business_unit_sales['formatted_sales'] = business_unit_sales['sales_collected_exc_tax'].apply(
+            business_unit_sales['formatted_sales'] = business_unit_sales['collected_to_date'].apply(
                 lambda x: format_indian_money(x).replace('₹', '')
             )
 
@@ -727,7 +744,7 @@ with tab3:
                 # Create Business Unit pie chart
                 fig_bu = px.pie(
                     business_unit_sales,
-                    values='sales_collected_exc_tax',
+                    values='collected_to_date',
                     names='business_unit',
                     title=f"Sales by Business Unit ({year_title})",
                     color_discrete_sequence=px.colors.qualitative.Bold,
@@ -742,7 +759,7 @@ with tab3:
                 )
 
                 # Add total sales in center
-                total_sales = business_unit_sales['sales_collected_exc_tax'].sum(
+                total_sales = business_unit_sales['collected_to_date'].sum(
                 )
                 fig_bu.add_annotation(
                     text=f"Total<br>{format_indian_money(total_sales)}",
@@ -764,15 +781,15 @@ with tab3:
                 if 'item_category' in breakdown_data.columns:
                     # Create data for treemap
                     hierarchy_data = breakdown_data.groupby(['business_unit', 'item_category'])[
-                        'sales_collected_exc_tax'].sum().reset_index()
+                        'collected_to_date'].sum().reset_index()
 
                     # Remove any zero or negative values that would cause normalization errors
-                    hierarchy_data = hierarchy_data[hierarchy_data['sales_collected_exc_tax'] > 0]
+                    hierarchy_data = hierarchy_data[hierarchy_data['collected_to_date'] > 0]
 
                     # Check if we have data after filtering
                     if not hierarchy_data.empty:
                         # Format values for display
-                        hierarchy_data['formatted_sales'] = hierarchy_data['sales_collected_exc_tax'].apply(
+                        hierarchy_data['formatted_sales'] = hierarchy_data['collected_to_date'].apply(
                             lambda x: format_indian_money(x).replace('₹', '')
                         )
 
@@ -780,9 +797,9 @@ with tab3:
                         fig_tree = px.treemap(
                             hierarchy_data,
                             path=['business_unit', 'item_category'],
-                            values='sales_collected_exc_tax',
+                            values='collected_to_date',
                             title=f"Hierarchical View of Sales ({year_title})",
-                            color='sales_collected_exc_tax',
+                            color='collected_to_date',
                             color_continuous_scale='Viridis',
                             custom_data=['formatted_sales']
                         )
@@ -805,12 +822,12 @@ with tab3:
             if 'item_category' in breakdown_data.columns:
                 # Get top 15 categories by sales
                 top_categories = breakdown_data.groupby(['item_category', 'business_unit'])[
-                    'sales_collected_exc_tax'].sum().reset_index()
+                    'collected_to_date'].sum().reset_index()
                 top_categories = top_categories.sort_values(
-                    'sales_collected_exc_tax', ascending=False).head(15)
+                    'collected_to_date', ascending=False).head(15)
 
                 # Format values for display
-                top_categories['formatted_sales'] = top_categories['sales_collected_exc_tax'].apply(
+                top_categories['formatted_sales'] = top_categories['collected_to_date'].apply(
                     lambda x: format_indian_money(x).replace('₹', '')
                 )
 
@@ -818,11 +835,11 @@ with tab3:
                 fig_cat = px.bar(
                     top_categories,
                     x='item_category',
-                    y='sales_collected_exc_tax',
+                    y='collected_to_date',
                     color='business_unit',
                     title=f"Top 15 Service/Product Categories ({year_title})",
                     labels={
-                        'sales_collected_exc_tax': 'Sales',
+                        'collected_to_date': 'Sales',
                         'item_category': 'Category',
                         'business_unit': 'Business Unit'
                     },
@@ -864,7 +881,7 @@ with tab3:
                     # Create pivot table with the clean invoice number
                     pivot = pd.pivot_table(
                         breakdown_data,
-                        values=['sales_collected_exc_tax', 'invoice_no_clean'],
+                        values=['collected_to_date', 'invoice_no_clean'],
                         index='item_category',
                         columns='business_unit',
                         aggfunc='sum',
@@ -878,7 +895,7 @@ with tab3:
 
                     # Format the sales columns with ₹ symbol and Indian comma format
                     for col in formatted_pivot.columns:
-                        if isinstance(col, tuple) and col[0] == 'sales_collected_exc_tax':
+                        if isinstance(col, tuple) and col[0] == 'collected_to_date':
                             formatted_pivot[col] = formatted_pivot[col].apply(
                                 lambda x: format_indian_money(
                                     x) if x > 0 else ""
@@ -893,10 +910,10 @@ with tab3:
                     # Fallback to a simple summary if pivot fails
                     if 'item_category' in breakdown_data.columns:
                         simple_summary = breakdown_data.groupby(
-                            'item_category')['sales_collected_exc_tax'].sum().reset_index()
+                            'item_category')['collected_to_date'].sum().reset_index()
                         simple_summary = simple_summary.sort_values(
-                            'sales_collected_exc_tax', ascending=False)
-                        simple_summary['sales_formatted'] = simple_summary['sales_collected_exc_tax'].apply(
+                            'collected_to_date', ascending=False)
+                        simple_summary['collected_to_date'] = simple_summary['collected_to_date'].apply(
                             format_indian_money)
                         simple_summary.columns = [
                             'Category', 'Sales Value', 'Sales (₹)']
@@ -915,17 +932,17 @@ with tab4:
 
         # Group by center and year
         yearly_center_sales = raw_sales_data.groupby(['center_name', 'Year'])[
-            'sales_collected_exc_tax'].sum().reset_index()
+            'collected_to_date'].sum().reset_index()
 
         # Create a comparison visualization
         fig = px.bar(
             yearly_center_sales,
             x='center_name',
-            y='sales_collected_exc_tax',
+            y='collected_to_date',
             color='Year',
             barmode='group',
             title="Center Sales by Year",
-            labels={'sales_collected_exc_tax': 'Sales',
+            labels={'collected_to_date': 'Sales',
                     'center_name': 'Center', 'Year': 'Year'}
         )
         fig.update_traces(
@@ -940,7 +957,7 @@ with tab4:
         center_pivot = yearly_center_sales.pivot_table(
             index='center_name',
             columns='Year',
-            values='sales_collected_exc_tax',
+            values='collected_to_date',
             observed=True
         ).reset_index()
 
@@ -965,7 +982,7 @@ with tab4:
         st.subheader("Projected Growth Analysis")
         latest_year = years[-1]
         center_pivot['Projected (10% Growth)'] = (yearly_center_sales[yearly_center_sales['Year'] == latest_year]
-                                                  ['sales_collected_exc_tax'] * 1.1)
+                                                  ['collected_to_date'] * 1.1)
         center_pivot['Projected (10% Growth)'] = center_pivot['Projected (10% Growth)'].apply(
             format_indian_money)
         st.dataframe(center_pivot, use_container_width=True)
@@ -1072,7 +1089,7 @@ with tab5:
 
                         if not date_sales.empty:
                             # Calculate total sales for this date
-                            total_sales = date_sales['sales_collected_exc_tax'].sum(
+                            total_sales = date_sales['collected_to_date'].sum(
                             )
 
                             # Add to our multi-year dataset
@@ -1087,7 +1104,7 @@ with tab5:
                             # Add center-specific data
                             for center in date_sales['center_name'].unique():
                                 center_sales = date_sales[date_sales['center_name']
-                                                          == center]['sales_collected_exc_tax'].sum()
+                                                          == center]['collected_to_date'].sum()
                                 all_years_data.append({
                                     'Months': festival['Months'],
                                     'Date': festival_date,
@@ -1232,7 +1249,7 @@ with tab5:
                 if not date_range_data.empty:
                     # Calculate daily totals
                     daily_sales = date_range_data.groupby('sale_date').agg({
-                        'sales_collected_exc_tax': 'sum'
+                        'collected_to_date': 'sum'
                     }).reset_index()
 
                     # Add relative day column
@@ -1250,13 +1267,13 @@ with tab5:
                 fig_analysis = px.bar(
                     combined_analysis,
                     x='Days from Festival',
-                    y='sales_collected_exc_tax',
+                    y='collected_to_date',
                     color='Year',
                     title=f"Sales Distribution Around {selected_festival}" + (
                         f" - {selected_center}" if selected_center != "All Centers" else ""),
                     labels={
                         'Days from Festival': 'Days (Negative = Before, Positive = After)',
-                        'sales_collected_exc_tax': 'Sales'
+                        'collected_to_date': 'Sales'
                     },
                     barmode='group'
                 )
@@ -1297,7 +1314,7 @@ with tab5:
                             ]
                             center_name = "All Centers"
 
-                        window_sales = window_data['sales_collected_exc_tax'].sum(
+                        window_sales = window_data['collected_to_date'].sum(
                         )
 
                         # Only add if there are sales
@@ -1384,18 +1401,18 @@ with tab5:
                             if 'item_category' in combined_festival_data.columns:
                                 # Group by category and year
                                 category_data = combined_festival_data.groupby(
-                                    ['item_category', 'Year'])['sales_collected_exc_tax'].sum().reset_index()
+                                    ['item_category', 'Year'])['collected_to_date'].sum().reset_index()
 
                                 # Create bar chart
                                 fig_category = px.bar(
                                     category_data,
                                     x='item_category',
-                                    y='sales_collected_exc_tax',
+                                    y='collected_to_date',
                                     color='Year',
                                     title=f"Service Categories During {selected_festival}",
                                     labels={
                                         'item_category': 'Service Category',
-                                        'sales_collected_exc_tax': 'Sales'
+                                        'collected_to_date': 'Sales'
                                     },
                                     barmode='group'
                                 )
@@ -1415,16 +1432,16 @@ with tab5:
 
                                 # Create a pie chart showing category distribution
                                 category_total = combined_festival_data.groupby(
-                                    'item_category')['sales_collected_exc_tax'].sum().reset_index()
+                                    'item_category')['collected_to_date'].sum().reset_index()
 
-                                category_total['formatted_sales'] = category_total['sales_collected_exc_tax'].apply(
+                                category_total['formatted_sales'] = category_total['collected_to_date'].apply(
                                     lambda x: format_indian_money(
                                         x).replace('₹', '')
                                 )
 
                                 fig_pie = px.pie(
                                     category_total,
-                                    values='sales_collected_exc_tax',
+                                    values='collected_to_date',
                                     names='item_category',
                                     title=f"Service Category Distribution for {selected_festival}",
                                     hole=0.4
@@ -1447,18 +1464,18 @@ with tab5:
                             if 'business_unit' in combined_festival_data.columns:
                                 # Group by business unit and year
                                 business_data = combined_festival_data.groupby(
-                                    ['business_unit', 'Year'])['sales_collected_exc_tax'].sum().reset_index()
+                                    ['business_unit', 'Year'])['collected_to_date'].sum().reset_index()
 
                                 # Create bar chart
                                 fig_business = px.bar(
                                     business_data,
                                     x='business_unit',
-                                    y='sales_collected_exc_tax',
+                                    y='collected_to_date',
                                     color='Year',
                                     title=f"Business Units During {selected_festival}",
                                     labels={
                                         'business_unit': 'Business Unit',
-                                        'sales_collected_exc_tax': 'Sales'
+                                        'collected_to_date': 'Sales'
                                     },
                                     barmode='group'
                                 )
@@ -1480,23 +1497,23 @@ with tab5:
                                 if selected_center == "All Centers":
                                     # Only show this chart if we're looking at all centers
                                     center_business = combined_festival_data.groupby(
-                                        ['center_name', 'business_unit'])['sales_collected_exc_tax'].sum().reset_index()
+                                        ['center_name', 'business_unit'])['collected_to_date'].sum().reset_index()
 
                                     # Get top 10 centers by sales
                                     top_centers = combined_festival_data.groupby(
-                                        'center_name')['sales_collected_exc_tax'].sum().nlargest(10).index.tolist()
+                                        'center_name')['collected_to_date'].sum().nlargest(10).index.tolist()
                                     center_business = center_business[center_business['center_name'].isin(
                                         top_centers)]
 
                                     fig_center_biz = px.bar(
                                         center_business,
                                         x='center_name',
-                                        y='sales_collected_exc_tax',
+                                        y='collected_to_date',
                                         color='business_unit',
                                         title=f"Business Unit Distribution by Center During {selected_festival}",
                                         labels={
                                             'center_name': 'Center',
-                                            'sales_collected_exc_tax': 'Sales',
+                                            'collected_to_date': 'Sales',
                                             'business_unit': 'Business Unit'
                                         }
                                     )
@@ -1523,23 +1540,23 @@ with tab5:
                             if 'item_name' in combined_festival_data.columns:
                                 # Group by item name and get top services
                                 top_services = combined_festival_data.groupby(
-                                    'item_name')['sales_collected_exc_tax'].sum().reset_index()
+                                    'item_name')['collected_to_date'].sum().reset_index()
                                 top_services = top_services.sort_values(
-                                    'sales_collected_exc_tax', ascending=False).head(15)
+                                    'collected_to_date', ascending=False).head(15)
 
                                 # Format for display
-                                top_services['formatted_sales'] = top_services['sales_collected_exc_tax'].apply(
+                                top_services['formatted_sales'] = top_services['collected_to_date'].apply(
                                     format_indian_money)
 
                                 # Create bar chart
                                 fig_services = px.bar(
                                     top_services,
                                     x='item_name',
-                                    y='sales_collected_exc_tax',
+                                    y='collected_to_date',
                                     title=f"Top 15 Services During {selected_festival}",
                                     labels={
                                         'item_name': 'Service Name',
-                                        'sales_collected_exc_tax': 'Sales'
+                                        'collected_to_date': 'Sales'
                                     },
                                     text='formatted_sales'
                                 )
@@ -1599,20 +1616,20 @@ with tab5:
                                 service_summary = combined_festival_data.groupby(
                                     ['item_name', 'item_category', 'business_unit']
                                 ).agg({
-                                    'sales_collected_exc_tax': 'sum',
+                                    'collected_to_date': 'sum',
                                     'invoice_no': 'nunique'  # Count unique invoices as a proxy for service count
                                 }).reset_index()
 
                                 # Calculate average price
-                                service_summary['average_price'] = service_summary['sales_collected_exc_tax'] / \
+                                service_summary['average_price'] = service_summary['collected_to_date'] / \
                                     service_summary['invoice_no']
 
                                 # Sort by revenue
                                 service_summary = service_summary.sort_values(
-                                    'sales_collected_exc_tax', ascending=False).head(20)
+                                    'collected_to_date', ascending=False).head(20)
 
                                 # Format for display
-                                service_summary['sales_collected_exc_tax'] = service_summary['sales_collected_exc_tax'].apply(
+                                service_summary['collected_to_date'] = service_summary['collected_to_date'].apply(
                                     format_indian_money)
                                 service_summary['average_price'] = service_summary['average_price'].apply(
                                     format_indian_money)
@@ -1637,7 +1654,7 @@ with tab5:
                             pd.Grouper(key='sale_date', freq='D')
                         ).agg({
                             'invoice_no': 'nunique',
-                            'sales_collected_exc_tax': 'sum'
+                            'collected_to_date': 'sum'
                         }).reset_index()
 
                         # Add relative day column for selected festival
@@ -1669,7 +1686,7 @@ with tab5:
                         fig_traffic.add_trace(
                             go.Scatter(
                                 x=daily_traffic['sale_date'],
-                                y=daily_traffic['sales_collected_exc_tax'],
+                                y=daily_traffic['collected_to_date'],
                                 name="Revenue",
                                 marker_color='firebrick',
                                 mode='lines+markers'
