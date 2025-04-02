@@ -53,7 +53,7 @@ def format_indian_money(amount, format_type='full'):
 S3_BUCKET = "extraa-files"
 S3_KEY = "SALON/Extraction_Mini.csv"
 
-# Enable memory optimization by default
+# Enable memory optimization
 MEMORY_OPTIMIZATION = True
 
 # Set page configuration
@@ -118,13 +118,25 @@ def load_data():
             # Fetch data from S3
             sales_data = read_csv_from_s3(S3_BUCKET, S3_KEY)
 
-            # Use more efficient data types
+            # Process categorical columns as categories from the beginning
             if MEMORY_OPTIMIZATION:
-                # Convert object columns to categories where appropriate
-                for col in sales_data.select_dtypes(['object']).columns:
-                    # If column has less than 50% unique values
-                    if sales_data[col].nunique() / len(sales_data) < 0.5:
-                        sales_data[col] = sales_data[col].astype('category')
+                # List of columns that are good candidates for categorical conversion
+                categorical_candidates = ['Center Name', 'Item Type', 'Item Category',
+                                          'Item Subcategory', 'Business Unit']
+
+                # Convert eligible columns to category dtype immediately
+                for col in categorical_candidates:
+                    if col in sales_data.columns and sales_data[col].nunique() / len(sales_data) < 0.5:
+                        try:
+                            sales_data[col] = sales_data[col].astype(
+                                'category')
+                        except Exception as e:
+                            print(
+                                f"Could not convert {col} to category: {str(e)}")
+
+                # Force cleanup of temporary objects
+                import gc
+                gc.collect()
 
         except Exception as e:
             st.error(f"Failed to load data from S3: {str(e)}")
@@ -133,36 +145,55 @@ def load_data():
 
         # Update status on completion
         if not sales_data.empty:
-            progress_bar.progress(50)
+            progress_bar.progress(30)
             status_text.info(f"Processing {len(sales_data)} records...")
 
-        # Clean and convert numeric columns
-        numeric_cols = ['Sales Collected (Exc.Tax)', 'Tax Collected', 'Sales Collected (Inc.Tax)',
-                        'Redeemed', 'Collected to Date', 'Collected']
-        for col in numeric_cols:
-            if col in sales_data.columns:
-                # Convert to numeric, coercing errors to NaN
-                sales_data[col] = pd.to_numeric(
-                    sales_data[col], errors='coerce')
+        # Clean and convert numeric columns - optimize the process
+        try:
+            numeric_cols = ['Sales Collected (Exc.Tax)', 'Tax Collected', 'Sales Collected (Inc.Tax)',
+                            'Redeemed', 'Collected to Date', 'Collected']
 
-                # Optimize numeric columns
-                if MEMORY_OPTIMIZATION:
-                    # Downcast to smaller float type if possible
+            # Process numeric columns more efficiently
+            for col in numeric_cols:
+                if col in sales_data.columns:
+                    # Use 'float32' instead of 'float64' to reduce memory usage
                     sales_data[col] = pd.to_numeric(
-                        sales_data[col], downcast='float')
+                        sales_data[col], errors='coerce', downcast='float')
 
-        progress_bar.progress(70)
+            # Force cleanup after numeric conversion
+            if MEMORY_OPTIMIZATION:
+                gc.collect()
 
-        # Convert Sale Date to datetime with error handling
-        sales_data['Sale Date'] = pd.to_datetime(
-            sales_data['Sale Date'], errors='coerce')
+            progress_bar.progress(50)
+        except Exception as e:
+            st.error(f"Error converting numeric columns: {str(e)}")
+            # Continue with the process even if this step fails
 
-        # Drop rows with invalid sale_date
-        sales_data = sales_data.dropna(subset=['Sale Date'])
+        # Process dates with better error handling
+        try:
+            # Convert Sale Date to datetime with error handling
+            sales_data['Sale Date'] = pd.to_datetime(
+                sales_data['Sale Date'], errors='coerce')
 
-        # Extract Year and Month as strings
-        sales_data['Year'] = sales_data['Sale Date'].dt.year.astype(str)
-        sales_data['Month'] = sales_data['Sale Date'].dt.strftime('%B')
+            # Drop rows with invalid sale_date
+            sales_data = sales_data.dropna(subset=['Sale Date'])
+
+            # Extract Year and Month - use more memory efficient approaches
+            # Store year as categorical to save memory
+            sales_data['Year'] = pd.Categorical(
+                sales_data['Sale Date'].dt.year.astype(str))
+            sales_data['Month'] = pd.Categorical(
+                sales_data['Sale Date'].dt.strftime('%B'))
+
+            # Force cleanup after date processing
+            if MEMORY_OPTIMIZATION:
+                gc.collect()
+
+            progress_bar.progress(70)
+        except Exception as e:
+            st.error(f"Error processing date data: {str(e)}")
+            if sales_data.empty:
+                return pd.DataFrame(), pd.DataFrame()
 
         # Add debug info about extracted years before filtering
         print(f"Years in data before filtering: {sales_data['Year'].unique()}")
@@ -171,33 +202,82 @@ def load_data():
         year_counts = sales_data['Year'].value_counts().sort_index()
         print(f"Records per year: {year_counts.to_dict()}")
 
-        progress_bar.progress(80)
-
         # Map columns to expected format for the dashboard
-        sales_data['SALON NAMES'] = sales_data['Center Name']
-        sales_data['BRAND'] = sales_data['Business Unit'].fillna('Other')
+        try:
+            sales_data['SALON NAMES'] = sales_data['Center Name']
 
-        # Rename columns to match the previous format
-        sales_data = sales_data.rename(columns={
-            'Sales Collected (Exc.Tax)': 'sales_collected_exc_tax',
-            'Tax Collected': 'tax_collected',
-            'Sales Collected (Inc.Tax)': 'sales_collected_inc_tax',
-            'Redeemed': 'redeemed',
-            'Collected to Date': 'collected_to_date',
-            'Collected': 'collected',
-            'Sale Date': 'sale_date',
-            'Invoice No': 'invoice_no',
-            'Center Name': 'center_name',
-            'Item Name': 'item_name',
-            'Item Type': 'item_type',
-            'Item Category': 'item_category',
-            'Item Subcategory': 'item_subcategory',
-            'Business Unit': 'business_unit'
-        })
+            # Handle Business Unit column carefully to avoid categorical issues
+            if 'Business Unit' in sales_data.columns:
+                # Convert to string first to handle any potential categorical data issues
+                business_unit_values = sales_data['Business Unit'].astype(str)
+                # Then fill NA values
+                sales_data['BRAND'] = business_unit_values.replace(
+                    'nan', 'Other').fillna('Other')
+            else:
+                # Default if column doesn't exist
+                sales_data['BRAND'] = 'Unknown'
 
-        # Group by Year, Month, SALON NAMES, BRAND to calculate metrics
-        # Using sales_collected_inc_tax for all sales calculations
-        grouped_sales = sales_data.groupby(['Year', 'Month', 'SALON NAMES', 'BRAND']).agg({
+            # Rename columns to match the previous format
+            sales_data = sales_data.rename(columns={
+                'Sales Collected (Exc.Tax)': 'sales_collected_exc_tax',
+                'Tax Collected': 'tax_collected',
+                'Sales Collected (Inc.Tax)': 'sales_collected_inc_tax',
+                'Redeemed': 'redeemed',
+                'Collected to Date': 'collected_to_date',
+                'Collected': 'collected',
+                'Sale Date': 'sale_date',
+                'Invoice No': 'invoice_no',
+                'Center Name': 'center_name',
+                'Item Name': 'item_name',
+                'Item Type': 'item_type',
+                'Item Category': 'item_category',
+                'Item Subcategory': 'item_subcategory',
+                'Business Unit': 'business_unit'
+            })
+
+            progress_bar.progress(80)
+        except Exception as e:
+            st.error(f"Error mapping column names: {str(e)}")
+            # Continue with available data
+
+        # Group data more efficiently
+        try:
+            # Process in chunks to reduce memory pressure
+            grouped_sales = group_and_aggregate_sales(sales_data)
+            progress_bar.progress(90)
+        except Exception as e:
+            st.error(f"Error grouping and calculating metrics: {str(e)}")
+            grouped_sales = pd.DataFrame(columns=[
+                                         'Year', 'Month', 'SALON NAMES', 'BRAND', 'MTD SALES', 'MTD BILLS', 'MTD ABV'])
+
+        # Force a final garbage collection to clean up memory
+        if MEMORY_OPTIMIZATION:
+            import gc
+            gc.collect()
+
+        progress_bar.progress(100)
+        status_text.success(f"Successfully loaded {len(sales_data)} records!")
+
+        # Store last refresh time
+        st.session_state.last_refresh_time = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # Return the transformed data
+        return grouped_sales, sales_data
+    except Exception as e:
+        st.error(f"Error loading data from S3: {e}")
+        st.exception(e)  # Show detailed error traceback
+        return pd.DataFrame(), pd.DataFrame()
+
+
+def group_and_aggregate_sales(sales_data):
+    """Process the groupby operation more efficiently to reduce memory usage"""
+    # Pre-calculate the columns needed
+    group_cols = ['Year', 'Month', 'SALON NAMES', 'BRAND']
+
+    # Group by Year, Month, SALON NAMES, BRAND to calculate metrics
+    try:
+        grouped_sales = sales_data.groupby(group_cols, observed=True).agg({
+            # Using sales_collected_inc_tax for sales calculations
             'sales_collected_inc_tax': 'sum',
             'invoice_no': 'nunique'
         }).reset_index()
@@ -215,27 +295,59 @@ def load_data():
             axis=1
         )
 
-        # Clear memory if optimization is enabled
-        if MEMORY_OPTIMIZATION:
-            # Force garbage collection
-            import gc
-            gc.collect()
+        return grouped_sales
+    except MemoryError:
+        st.error("Memory error during grouping. Trying alternative approach...")
+        # Try a more memory-efficient approach
+        try:
+            # Process in smaller chunks by year
+            result_chunks = []
+            for year in sales_data['Year'].unique():
+                year_data = sales_data[sales_data['Year'] == year]
 
-        progress_bar.progress(100)
-        status_text.success(f"Successfully loaded {len(sales_data)} records!")
+                # Group this subset
+                year_group = year_data.groupby(['Month', 'SALON NAMES', 'BRAND']).agg({
+                    'sales_collected_inc_tax': 'sum',
+                    'invoice_no': 'nunique'
+                }).reset_index()
 
-        # Store last refresh time
-        st.session_state.last_refresh_time = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+                # Add year back
+                year_group['Year'] = year
+                result_chunks.append(year_group)
 
-        # Return the transformed data
-        return grouped_sales, sales_data
-    except Exception as e:
-        st.error(f"Error loading data from S3: {e}")
-        return pd.DataFrame(), pd.DataFrame()
+                # Clean up to free memory
+                del year_data
+                import gc
+                gc.collect()
 
-    # Load processed service data is no longer needed since we're using the raw data directly
-    # service_data = load_processed_service_data()
-    # return sales_data, service_data
+            # Combine all chunks
+            if result_chunks:
+                combined = pd.concat(result_chunks)
+
+                # Reorder columns to match expected format
+                combined = combined[['Year', 'Month', 'SALON NAMES',
+                                     'BRAND', 'sales_collected_inc_tax', 'invoice_no']]
+
+                # Rename columns
+                combined.rename(columns={
+                    'sales_collected_inc_tax': 'MTD SALES',
+                    'invoice_no': 'MTD BILLS'
+                }, inplace=True)
+
+                # Calculate ABV
+                combined['MTD ABV'] = combined.apply(
+                    lambda row: row['MTD SALES'] /
+                    row['MTD BILLS'] if row['MTD BILLS'] > 0 else 0,
+                    axis=1
+                )
+
+                return combined
+            else:
+                st.error("Failed to process data in chunks")
+                return pd.DataFrame(columns=['Year', 'Month', 'SALON NAMES', 'BRAND', 'MTD SALES', 'MTD BILLS', 'MTD ABV'])
+        except Exception as e:
+            st.error(f"Error in alternative grouping approach: {str(e)}")
+            return pd.DataFrame(columns=['Year', 'Month', 'SALON NAMES', 'BRAND', 'MTD SALES', 'MTD BILLS', 'MTD ABV'])
 
 
 # Only load data if not already loaded in this session
