@@ -7,3 +7,4 @@ python-dateutil==2.9.0.post0
 boto3==1.28.53
 python-dotenv==1.0.0
 orjson==3.9.10
+openpyxl
