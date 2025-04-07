@@ -1,6 +1,6 @@
 import boto3
 import pandas as pd
-from io import StringIO
+from io import StringIO, BytesIO
 import streamlit as st
 from botocore.exceptions import ClientError
 
@@ -19,19 +19,38 @@ def get_s3_client():
         raise Exception(f"Failed to create S3 client: {str(e)}")
 
 
-def read_csv_from_s3(bucket_name, file_key):
-    """Read a CSV file from S3 and return it as a pandas DataFrame"""
+def read_file_from_s3(bucket_name, file_key):
+    """Read a file from S3 and return it as a pandas DataFrame. Supports both CSV and Excel files."""
     try:
         s3_client = get_s3_client()
         response = s3_client.get_object(Bucket=bucket_name, Key=file_key)
-        csv_content = response['Body'].read().decode('utf-8')
-        df = pd.read_csv(StringIO(csv_content), low_memory=False)
+
+        # Determine file type from extension
+        file_extension = file_key.lower().split('.')[-1]
+
+        if file_extension == 'csv':
+            # Handle CSV files
+            csv_content = response['Body'].read().decode('utf-8')
+            df = pd.read_csv(StringIO(csv_content), low_memory=False)
+        elif file_extension in ['xlsx', 'xls']:
+            # Handle Excel files
+            excel_content = response['Body'].read()
+            df = pd.read_excel(BytesIO(excel_content))
+        else:
+            raise ValueError(f"Unsupported file type: {file_extension}")
+
         return df
     except ClientError as e:
         if e.response['Error']['Code'] == 'NoSuchKey':
             raise FileNotFoundError(
                 f"File {file_key} not found in bucket {bucket_name}")
         raise Exception(f"Error reading file from S3: {str(e)}")
+
+
+# Keep read_csv_from_s3 for backward compatibility
+def read_csv_from_s3(bucket_name, file_key):
+    """Read a CSV file from S3 and return it as a pandas DataFrame"""
+    return read_file_from_s3(bucket_name, file_key)
 
 
 def save_df_to_s3(df, bucket_name, file_key):

@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from supabase_utils import fetch_data_from_supabase
-from s3_utils import check_file_exists_in_s3, read_csv_from_s3
+from s3_utils import check_file_exists_in_s3, read_file_from_s3
 import datetime
 
 # Load configuration from secrets
@@ -24,6 +24,9 @@ def load_sales_data():
                                 'redeemed', 'collected_to_date', 'collected']
                 for col in numeric_cols:
                     if col in sales_data.columns:
+                        # First remove currency symbols and commas
+                        sales_data[col] = sales_data[col].replace(
+                            {'\$': '', '₹': '', ',': ''}, regex=True)
                         # Convert to numeric, coercing errors to NaN
                         sales_data[col] = pd.to_numeric(
                             sales_data[col], errors='coerce')

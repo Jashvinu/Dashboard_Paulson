@@ -1,6 +1,6 @@
 import pandas as pd
 import streamlit as st
-from s3_utils import read_csv_from_s3, save_df_to_s3, check_file_exists_in_s3
+from s3_utils import read_file_from_s3, save_df_to_s3, check_file_exists_in_s3
 
 # S3 configuration
 S3_BUCKET = st.secrets["S3_BUCKET"]
@@ -10,8 +10,8 @@ S3_PREFIX = st.secrets["S3_PREFIX"]
 def preprocess_sales_data():
     """Preprocess sales data for the dashboard"""
     # Load sales data from S3
-    sales_data = read_csv_from_s3(
-        S3_BUCKET, f"{S3_PREFIX}merged_sales_data.csv")
+    sales_data = read_file_from_s3(
+        S3_BUCKET, f"{S3_PREFIX}merged_sales_data.xlsx")
 
     # Convert Year to string for consistent handling
     sales_data['Year'] = sales_data['Year'].astype(str)
@@ -20,6 +20,9 @@ def preprocess_sales_data():
     numeric_cols = ['MTD SALES', 'MTD BILLS', 'MTD ABV']
     for col in numeric_cols:
         if col in sales_data.columns:
+            # First remove currency symbols and commas
+            sales_data[col] = sales_data[col].replace(
+                {'\$': '', '₹': '', ',': ''}, regex=True)
             sales_data[col] = pd.to_numeric(sales_data[col], errors='coerce')
 
     # Create month order for sorting

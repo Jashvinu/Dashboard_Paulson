@@ -51,7 +51,7 @@ def format_indian_money(amount, format_type='full'):
 
 # S3 configuration
 S3_BUCKET = "extraa-files"
-S3_KEY = "SALON/Extraction_Mini.csv"
+S3_KEY = "SALON/Paulsons_Datas.xlsx"
 
 # Enable memory optimization
 MEMORY_OPTIMIZATION = True
@@ -156,6 +156,9 @@ def load_data():
             # Process numeric columns more efficiently
             for col in numeric_cols:
                 if col in sales_data.columns:
+                    # First remove currency symbols and commas
+                    sales_data[col] = sales_data[col].replace(
+                        {'\$': '', '₹': '', ',': ''}, regex=True)
                     # Use 'float32' instead of 'float64' to reduce memory usage
                     sales_data[col] = pd.to_numeric(
                         sales_data[col], errors='coerce', downcast='float')
@@ -871,6 +874,16 @@ with tab3:
             # Group by Business Unit for business unit chart
             business_unit_sales = breakdown_data.groupby(
                 'business_unit')['sales_collected_inc_tax'].sum().reset_index()
+
+            # Convert categorical to string if needed
+            if hasattr(business_unit_sales['business_unit'], 'cat'):
+                business_unit_sales['business_unit'] = business_unit_sales['business_unit'].astype(
+                    str)
+
+            # Fill NA values
+            business_unit_sales['business_unit'] = business_unit_sales['business_unit'].fillna(
+                'Unknown')
+
             business_unit_sales = business_unit_sales.sort_values(
                 'sales_collected_inc_tax', ascending=False)
 
@@ -963,103 +976,74 @@ with tab3:
             # Create bar chart for top categories if item_category is available
             if 'item_category' in breakdown_data.columns:
                 # Get top 15 categories by sales
-                top_categories = breakdown_data.groupby(['item_category', 'business_unit'])[
-                    'sales_collected_inc_tax'].sum().reset_index()
-                top_categories = top_categories.sort_values(
-                    'sales_collected_inc_tax', ascending=False).head(15)
-
-                # Format values for display
-                top_categories['formatted_sales'] = top_categories['sales_collected_inc_tax'].apply(
-                    lambda x: format_indian_money(x).replace('₹', '')
-                )
-
-                # Create bar chart
-                fig_cat = px.bar(
-                    top_categories,
-                    x='item_category',
-                    y='sales_collected_inc_tax',
-                    color='business_unit',
-                    title=f"Top 15 Service/Product Categories ({year_title})",
-                    labels={
-                        'sales_collected_inc_tax': 'Sales',
-                        'item_category': 'Category',
-                        'business_unit': 'Business Unit'
-                    },
-                    text='formatted_sales'
-                )
-
-                # Format the bar chart
-                fig_cat.update_traces(
-                    texttemplate='₹%{text}',
-                    textposition='outside',
-                    hovertemplate='₹%{text}<extra></extra>'
-                )
-
-                fig_cat.update_layout(
-                    xaxis={'categoryorder': 'total descending',
-                           'title': 'Category'},
-                    yaxis_title='Sales',
-                    legend_title='Business Unit'
-                )
-
-                st.plotly_chart(fig_cat, use_container_width=True)
-
-                # Add pivot table with top categories by business unit
-                st.subheader("Top Categories by Business Unit")
-
                 try:
-                    # Ensure invoice_no is numeric and handles string values
-                    if 'invoice_no' in breakdown_data.columns:
-                        # Convert invoice_no to string first to handle potential mixed types
-                        breakdown_data['invoice_no_clean'] = pd.to_numeric(
-                            pd.Series([str(x).split('II')[0]
-                                      for x in breakdown_data['invoice_no']]),
-                            errors='coerce'
-                        )
-                    else:
-                        # Use a dummy column if invoice_no doesn't exist
-                        breakdown_data['invoice_no_clean'] = 1
+                    top_categories = breakdown_data.groupby(['item_category', 'business_unit'])[
+                        'sales_collected_inc_tax'].sum().reset_index()
 
-                    # Create pivot table with the clean invoice number
-                    pivot = pd.pivot_table(
-                        breakdown_data,
-                        values=['sales_collected_inc_tax', 'invoice_no_clean'],
-                        index='item_category',
-                        columns='business_unit',
-                        aggfunc='sum',
-                        fill_value=0,
-                        observed=True
+                    # Convert categorical columns to strings to avoid Plotly issues
+                    if hasattr(top_categories['business_unit'], 'cat'):
+                        top_categories['business_unit'] = top_categories['business_unit'].astype(
+                            str)
+                    if hasattr(top_categories['item_category'], 'cat'):
+                        top_categories['item_category'] = top_categories['item_category'].astype(
+                            str)
+
+                    # Make sure there are no missing values that could cause problems
+                    top_categories['business_unit'] = top_categories['business_unit'].fillna(
+                        'Unknown')
+
+                    top_categories = top_categories.sort_values(
+                        'sales_collected_inc_tax', ascending=False).head(15)
+
+                    # Format values for display
+                    top_categories['formatted_sales'] = top_categories['sales_collected_inc_tax'].apply(
+                        lambda x: format_indian_money(x).replace('₹', '')
                     )
 
-                    # Format for display - flatten columns and format values
-                    pivot_flat = pivot.reset_index()
-                    formatted_pivot = pivot_flat.copy()
+                    # Create bar chart with error handling
+                    try:
+                        fig_cat = px.bar(
+                            top_categories,
+                            x='item_category',
+                            y='sales_collected_inc_tax',
+                            color='business_unit',
+                            title=f"Top 15 Service/Product Categories ({year_title})",
+                            labels={
+                                'sales_collected_inc_tax': 'Sales',
+                                'item_category': 'Category',
+                                'business_unit': 'Business Unit'
+                            },
+                            text='formatted_sales'
+                        )
 
-                    # Format the sales columns with ₹ symbol and Indian comma format
-                    for col in formatted_pivot.columns:
-                        if isinstance(col, tuple) and col[0] == 'sales_collected_inc_tax':
-                            formatted_pivot[col] = formatted_pivot[col].apply(
-                                lambda x: format_indian_money(
-                                    x) if x > 0 else ""
-                            )
+                        # Format the bar chart
+                        fig_cat.update_traces(
+                            texttemplate='₹%{text}',
+                            textposition='outside',
+                            hovertemplate='₹%{text}<extra></extra>'
+                        )
 
-                    st.dataframe(formatted_pivot, use_container_width=True)
+                        fig_cat.update_layout(
+                            xaxis={'categoryorder': 'total descending',
+                                   'title': 'Category'},
+                            yaxis_title='Sales',
+                            legend_title='Business Unit'
+                        )
+
+                        st.plotly_chart(fig_cat, use_container_width=True)
+                    except Exception as e:
+                        st.error(
+                            f"Error creating service category visualization: {str(e)}")
+                        # Fallback to a simple table display
+                        st.write("Showing data as table instead:")
+                        display_df = top_categories[[
+                            'item_category', 'business_unit', 'formatted_sales']]
+                        display_df.columns = [
+                            'Category', 'Business Unit', 'Sales']
+                        st.dataframe(display_df, use_container_width=True)
                 except Exception as e:
-                    st.error(f"Error creating pivot table: {e}")
-                    st.info(
-                        "This may be due to mixed data types in the invoice_no column. Showing basic category summary instead.")
-
-                    # Fallback to a simple summary if pivot fails
-                    if 'item_category' in breakdown_data.columns:
-                        simple_summary = breakdown_data.groupby(
-                            'item_category')['sales_collected_inc_tax'].sum().reset_index()
-                        simple_summary = simple_summary.sort_values(
-                            'sales_collected_inc_tax', ascending=False)
-                        simple_summary['sales_collected_inc_tax'] = simple_summary['sales_collected_inc_tax'].apply(
-                            format_indian_money)
-                        simple_summary.columns = [
-                            'Category', 'Sales Value', 'Sales (₹)']
-                        st.dataframe(simple_summary, use_container_width=True)
+                    st.error(f"Error processing service categories: {str(e)}")
+                    st.info("Unable to display service categories breakdown.")
             else:
                 st.info("Business unit data is not available.")
 
